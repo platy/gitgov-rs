@@ -201,11 +201,21 @@ fn main() -> Result<()> {
 
     if dotenv::var("DISABLE_PROCESS_UPDATES").is_err() {
         push(&repo_path)?;
+        let count = process_updates_in_dir(EMAILS_FROM_GOVUK_PATH, ARCHIVE_DIR, &repo_path, &reference)
+            .expect("the processing fails, the repo may be unclean");
+        if count > 0 {
+            println!("Processed {} update emails, pushing", count);
+            push(&repo_path).unwrap_or_else(|err| println!("Push failed : {}", err));
+        }
     }
 
     let socket = TcpListener::bind(("0.0.0.0", 25))?;
     socket.incoming().for_each(|res| match res {
         Ok(conn) => {
+            if let Err(err) = receive_updates_on_socket(conn, "inbox") {
+                println!("Closed SMTP session due to error : {}", err);
+            }
+            
             if dotenv::var("DISABLE_PROCESS_UPDATES").is_err() {
                 let count = process_updates_in_dir(EMAILS_FROM_GOVUK_PATH, ARCHIVE_DIR, &repo_path, &reference)
                     .expect("the processing fails, the repo may be unclean");
@@ -214,10 +224,6 @@ fn main() -> Result<()> {
                     push(&repo_path).unwrap_or_else(|err| println!("Push failed : {}", err));
                 }
             }
-
-            if let Err(err) = receive_updates_on_socket(conn, "inbox") {
-                println!("Closed SMTP session due to error : {}", err);
-            }
         }
         Err(err) => eprintln!("Failure accepting connection :{}", err),
     });
@@ -225,6 +231,7 @@ fn main() -> Result<()> {
 }
 
 fn push(repo_base: impl AsRef<Path>) -> Result<()> {
+    println!("Pushing to github");
     let mut remote_callbacks = git2::RemoteCallbacks::new();
     remote_callbacks.credentials(|_url, username_from_url, _allowed_types| {
         git2::Cred::ssh_key(
@@ -255,6 +262,7 @@ fn process_updates_in_dir(
         if to_inbox.metadata()?.is_dir() {
             for email in fs::read_dir(to_inbox.path())? {
                 let email = email?;
+                println!("Processing {:?}", email);
                 if !(process_email_update_file(to_inbox.file_name(), &email, &out_dir, &repo, reference).context(
                     format!("Failed processing {}", email.path().to_str().unwrap_or_default()),
                 )?) {
